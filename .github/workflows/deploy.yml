@@ -20,26 +20,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Finds package.json wherever it was uploaded (repo root, or inside an extra subfolder).
+      - name: Locate project folder
+        id: locate
+        run: |
+          PKG=""
+          for f in $(find . -maxdepth 3 -name package.json -not -path '*/node_modules/*' -not -path './.git/*'); do
+            if grep -q '"name": "relic-website"' "$f"; then PKG="$f"; break; fi
+          done
+          if [ -z "$PKG" ]; then
+            echo "::error::package.json for relic-website was not found. Repository contents (3 levels):"
+            find . -maxdepth 3 -not -path './.git/*' | sort
+            exit 1
+          fi
+          DIR="$(dirname "$PKG")"
+          echo "Project folder: $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          
 
       # `npm ci` is used automatically when package-lock.json is committed (recommended).
       - name: Install dependencies
+        working-directory: ${{ steps.locate.outputs.dir }}
         run: |
-          if [ -f package-lock.json ]; then npm install; else npm install; fi
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      # Reports TypeScript problems without blocking the deployment.
+      - name: Type check (non-blocking)
+        working-directory: ${{ steps.locate.outputs.dir }}
+        continue-on-error: true
+        run: npm run typecheck
 
       - name: Build
+        working-directory: ${{ steps.locate.outputs.dir }}
         run: npm run build
         env:
-          # Project sites are served from /<repository-name>/ — Vite needs to know.
+          # Project sites are served from /<repository-name>/ -> /relic-website/
           VITE_BASE: /${{ github.event.repository.name }}/
           VITE_SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
 
+      - name: Verify build output and base path
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: |
+          test -f dist/index.html
+          grep -q "/${{ github.event.repository.name }}/assets/" dist/index.html
+          ls -la dist dist/media
+
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: ${{ steps.locate.outputs.dir }}/dist
 
   deploy:
     needs: build
